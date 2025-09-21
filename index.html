@@ -21,9 +21,9 @@
   <div id="summary">Cargando...</div>
   <pre id="debug"></pre>
 
-  <script>
-  // ⚠️ API KEY de la MISMA subcuenta que el contacto
-  const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g";
+ <script>
+  // ⚠️ API KEY (misma subcuenta del contacto)
+  const API_KEY = "TU_API_KEY_AQUI";
 
   const params    = new URLSearchParams(location.search);
   const contactId = params.get("contactId");
@@ -35,22 +35,57 @@
   const HDRS = { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" };
   const log  = (...a)=>{ const d=document.getElementById("debug"); if(d) d.textContent+=a.join(" ")+"\n"; console.log(...a); };
 
-  async function j(url){ const r=await fetch(url,{headers:HDRS,cache:"no-store"}); return r.json(); }
+  async function j(url){ const r=await fetch(url,{headers:HDRS,cache:"no-store"}); if(!r.ok) throw new Error(r.status+" "+r.statusText+" @ "+url); return r.json(); }
+  const norm = s => (s||"").trim().toLowerCase();
+  const pickValue = o => o?.value ?? o?.field_value ?? o?.fieldValue ?? o?.text ?? o?.stringValue ?? "";
 
-  // IDs de los campos que se llaman “Client Summary” (por si hay duplicados)
+  // Trae IDs de campos llamados "Client Summary" (por si hubiera duplicados)
   async function getFieldIdsByName() {
     const data = await j("https://rest.gohighlevel.com/v1/custom-fields");
     const list = data.customFields || [];
-    const norm = s => (s||"").trim().toLowerCase();
-    const ids  = list.filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME))
-                     .map(f => f.id);
+    const ids  = list.filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME)).map(f=>f.id);
     log("coincidencias por nombre:", ids.length);
     return ids;
   }
 
-  function pickValue(item){
-    // distintas formas en que llega el valor
-    return item?.value ?? item?.field_value ?? item?.fieldValue ?? item?.text ?? item?.stringValue ?? "";
+  // 1) Intenta obtener valores desde endpoints dedicados a custom fields del contacto
+  async function fetchContactCFValues() {
+    const candidates = [
+      `https://rest.gohighlevel.com/v2/contacts/${contactId}/customFields`,
+      `https://rest.gohighlevel.com/v1/contacts/${contactId}/customFields`,
+      `https://rest.gohighlevel.com/v1/contacts/${contactId}/custom-fields`
+    ];
+    for (const url of candidates) {
+      try {
+        const data = await j(url);
+        const arr = Array.isArray(data) ? data : (Array.isArray(data.customFields) ? data.customFields : (Array.isArray(data.data) ? data.data : []));
+        if (arr.length) { log("endpoint valores OK:", url, "| items:", arr.length); return arr; }
+      } catch (e) {
+        log("endpoint valores falla:", e.message);
+      }
+    }
+    return [];
+  }
+
+  // 2) Fallback: intenta traer el contacto y leer obj/arr si existieran
+  async function fetchContactCFInline() {
+    const candidates = [
+      `https://rest.gohighlevel.com/v1/contacts/${contactId}?include=customFields`,
+      `https://rest.gohighlevel.com/v1/contacts/${contactId}`,
+      `https://rest.gohighlevel.com/v2/contacts/${contactId}`
+    ];
+    for (const url of candidates) {
+      try {
+        const c = await j(url);
+        const obj = c && typeof c.customField === "object" ? c.customField : null;
+        const arr = Array.isArray(c?.customFields) ? c.customFields : [];
+        log("inline prueba:", url, "| has obj:", !!obj, "| arr len:", arr.length);
+        if (obj || arr.length) return { obj, arr };
+      } catch (e) {
+        log("inline falla:", e.message);
+      }
+    }
+    return { obj:null, arr:[] };
   }
 
   async function load() {
@@ -60,61 +95,43 @@
 
       const ids = await getFieldIdsByName();
 
-      // Trae el contacto (incluimos customFields)
-      const c = await j(`https://rest.gohighlevel.com/v1/contacts/${contactId}?include=customFields`);
-      // Dump parcial para inspección
-      log("has customField obj:", !!c.customField);
-      log("customFields array len:", Array.isArray(c.customFields) ? c.customFields.length : 0);
-
-      // Muestra 1–2 ejemplos de lo que trae, recortado
-      if (c.customField) {
-        const keys = Object.keys(c.customField);
-        log("customField keys (primeras):", keys.slice(0,15).join(", "));
-        if (keys.length) log("customField sample:", keys[0], "=", String(c.customField[keys[0]]).slice(0,120));
-      }
-      if (Array.isArray(c.customFields) && c.customFields.length) {
-        const it = c.customFields[0];
-        log("customFields[0] sample:", JSON.stringify({
-          id: it.id, customFieldId: it.customFieldId, key: it.key, name: it.name, label: it.label,
-          value: pickValue(it)
-        }).slice(0,220));
-      }
-
+      // A) Primero, intenta endpoints de valores
       let value = "";
-
-      // 1) Por KEY directa en el objeto customField
-      if (c.customField && typeof c.customField === "object" && SUMMARY_FIELD_KEY in c.customField) {
-        value = c.customField[SUMMARY_FIELD_KEY] || "";
-        if (value) log("match por KEY:", SUMMARY_FIELD_KEY);
-      }
-
-      // 2) Por ID en el objeto customField
-      if (!value && c.customField && typeof c.customField === "object") {
-        for (const fid of ids) {
-          if (c.customField[fid]) { value = c.customField[fid]; log("match por ID en objeto:", fid); break; }
+      const valuesArr = await fetchContactCFValues();
+      if (valuesArr.length) {
+        // Busca por key, por id o por nombre
+        const hitKey = valuesArr.find(it => norm(it.key||it.fieldKey||"") === norm(SUMMARY_FIELD_KEY));
+        const hitId  = valuesArr.find(it => ids.includes(it.id||it.customFieldId));
+        const hitNm  = valuesArr.find(it => norm(it.name||it.label||"")===norm(SUMMARY_FIELD_NAME));
+        const hit = hitKey || hitId || hitNm;
+        if (hit) {
+          value = pickValue(hit) || "";
+          log("match en endpoint valores:", JSON.stringify({key:hit?.key||hit?.fieldKey, id:hit?.id||hit?.customFieldId, name:hit?.name||hit?.label, val:String(value).slice(0,80)}));
         }
       }
 
-      // 3) Por ID/KEY/NOMBRE en el array customFields
-      if (!value && Array.isArray(c.customFields)) {
-        for (const item of c.customFields) {
-          const kid   = item.id ?? item.customFieldId ?? item.key ?? item.fieldKey ?? "";
-          const kname = (item.name ?? item.label ?? "").trim().toLowerCase();
-          const val   = pickValue(item);
+      // B) Si no hubo suerte, intenta leerlo inline desde el contacto
+      if (!value) {
+        const {obj, arr} = await fetchContactCFInline();
 
-          if (
-            (kid && (ids.includes(kid) || kid === SUMMARY_FIELD_KEY)) ||
-            (kname && kname === SUMMARY_FIELD_NAME.toLowerCase())
-          ) {
-            if (val) { value = val; log("match en arreglo:", JSON.stringify({kid, kname, val: String(val).slice(0,80)})); break; }
+        if (obj) {
+          if (SUMMARY_FIELD_KEY in obj && obj[SUMMARY_FIELD_KEY]) { value = obj[SUMMARY_FIELD_KEY]; log("match por KEY en obj"); }
+          for (const fid of ids) { if (!value && obj[fid]) { value = obj[fid]; log("match por ID en obj:", fid); } }
+          if (!value) {
+            const keyHit = Object.keys(obj).find(k => k.toLowerCase().includes("client_summary"));
+            if (keyHit && obj[keyHit]) { value = obj[keyHit]; log("match por substring en obj:", keyHit); }
           }
         }
-      }
-
-      // 4) Heurística: cualquier clave en el objeto que contenga 'client_summary'
-      if (!value && c.customField && typeof c.customField === "object") {
-        const keyHit = Object.keys(c.customField).find(k => k.toLowerCase().includes("client_summary"));
-        if (keyHit && c.customField[keyHit]) { value = c.customField[keyHit]; log("match por substring en objeto:", keyHit); }
+        if (!value && arr && arr.length) {
+          for (const it of arr) {
+            const kid   = it.id ?? it.customFieldId ?? it.key ?? it.fieldKey ?? "";
+            const kname = norm(it.name ?? it.label ?? "");
+            const val   = pickValue(it);
+            if ((kid && (ids.includes(kid) || norm(kid)===norm(SUMMARY_FIELD_KEY))) || (kname===norm(SUMMARY_FIELD_NAME))) {
+              if (val) { value = val; log("match en arr inline:", JSON.stringify({kid,kname,val:String(val).slice(0,80)})); break; }
+            }
+          }
+        }
       }
 
       log("valor:", value ? String(value).slice(0,200) : "(vacío)");
@@ -127,3 +144,5 @@
 
   load();
 </script>
+
+
