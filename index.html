@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Client Summary</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    #summary {
+      white-space: pre-wrap;
+      background: #f5f5f5;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h2>📝 Client Summary</h2>
+  <div id="summary">Cargando...</div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const contactId = urlParams.get("contactId");
+
+    const apiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g"; // 🔑 pega aquí tu API Key de la subcuenta
+    const apiUrl = `https://rest.gohighlevel.com/v1/contacts/${contactId}`;
+
+    async function loadSummary() {
+      try {
+        const res = await fetch(apiUrl, {
+          headers: { Authorization: `Bearer ${apiKey}` }
+        });
+        const data = await res.json();
+
+        // Los custom fields vienen en data.customField
+        const customFields = data.customField || {};
+        const summary = customFields["Client Summary"] || "Sin resumen disponible";
+
+        document.getElementById("summary").innerText = summary;
+      } catch (e) {
+        document.getElementById("summary").innerText = "⚠️ Error al cargar";
+      }
+    }
+
+    loadSummary();
+  </script>
+</body>
+</html>
