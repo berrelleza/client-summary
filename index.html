@@ -22,128 +22,109 @@
   <pre id="debug"></pre>
 
  <script>
-  // ⚠️ API KEY (misma subcuenta del contacto)
+  // ⚠️ API KEY de la MISMA subcuenta del contacto
   const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzU4NDQwNjA2ODcyLCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.tZK7SGvu8mf12cCGCjP5pAMxSWNf1stfNjm_l9vqPas";
 
-  const params    = new URLSearchParams(location.search);
-  const contactId = params.get("contactId");
+  const p = new URLSearchParams(location.search);
+  const contactId  = (p.get("contactId")  || "").trim();
+  const locationId = (p.get("locationId") || "").trim();  // <-- IMPORTANTE
 
-  // Unique key EXACTA (sin llaves) y nombre visible
-  const SUMMARY_FIELD_KEY  = "contact.client_summary";
-  const SUMMARY_FIELD_NAME = "Client Summary";
+  const SUMMARY_FIELD_KEY  = "contact.client_summary";     // unique key exacta
+  const SUMMARY_FIELD_NAME = "Client Summary";             // etiqueta visible
 
   const HDRS = { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" };
   const log  = (...a)=>{ const d=document.getElementById("debug"); if(d) d.textContent+=a.join(" ")+"\n"; console.log(...a); };
-
-  async function j(url){ const r=await fetch(url,{headers:HDRS,cache:"no-store"}); if(!r.ok) throw new Error(r.status+" "+r.statusText+" @ "+url); return r.json(); }
   const norm = s => (s||"").trim().toLowerCase();
-  const pickValue = o => o?.value ?? o?.field_value ?? o?.fieldValue ?? o?.text ?? o?.stringValue ?? "";
+  const pick = o => o?.value ?? o?.field_value ?? o?.fieldValue ?? o?.text ?? o?.stringValue ?? "";
 
-  // Trae IDs de campos llamados "Client Summary" (por si hubiera duplicados)
-  async function getFieldIdsByName() {
-    const data = await j("https://rest.gohighlevel.com/v1/custom-fields");
-    const list = data.customFields || [];
-    const ids  = list.filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME)).map(f=>f.id);
-    log("coincidencias por nombre:", ids.length);
-    return ids;
+  async function j(url){
+    const r = await fetch(url, { headers: HDRS, cache: "no-store" });
+    if (!r.ok) throw new Error(r.status+" @ "+url);
+    return r.json();
   }
 
-  // 1) Intenta obtener valores desde endpoints dedicados a custom fields del contacto
-  async function fetchContactCFValues() {
-    const candidates = [
-      `https://rest.gohighlevel.com/v2/contacts/${contactId}/customFields`,
-      `https://rest.gohighlevel.com/v1/contacts/${contactId}/customFields`,
-      `https://rest.gohighlevel.com/v1/contacts/${contactId}/custom-fields`
+  // Endpoints que suelen devolver los valores de CF cuando se pasa locationId
+  async function fetchValues() {
+    if (!contactId) throw new Error("Falta contactId");
+    if (!locationId) throw new Error("Falta locationId");
+    const urls = [
+      // 1) Ruta más frecuente para valores de CF
+      `https://rest.gohighlevel.com/v1/contacts/custom-fields?locationId=${encodeURIComponent(locationId)}&contactId=${encodeURIComponent(contactId)}`,
+      // 2) Variantes por si tu instancia expone estas
+      `https://rest.gohighlevel.com/v2/contacts/${encodeURIComponent(contactId)}/customFields?locationId=${encodeURIComponent(locationId)}`,
+      `https://rest.gohighlevel.com/v1/contacts/${encodeURIComponent(contactId)}/customFields?locationId=${encodeURIComponent(locationId)}`,
     ];
-    for (const url of candidates) {
+    for (const url of urls) {
       try {
         const data = await j(url);
-        const arr = Array.isArray(data) ? data : (Array.isArray(data.customFields) ? data.customFields : (Array.isArray(data.data) ? data.data : []));
-        if (arr.length) { log("endpoint valores OK:", url, "| items:", arr.length); return arr; }
-      } catch (e) {
-        log("endpoint valores falla:", e.message);
-      }
+        const arr = Array.isArray(data) ? data
+                  : Array.isArray(data.customFields) ? data.customFields
+                  : Array.isArray(data.data) ? data.data
+                  : [];
+        log("probe valores:", url, "| items:", arr.length);
+        if (arr.length) return arr;
+      } catch(e){ log("sin valores aquí:", e.message); }
     }
     return [];
   }
 
-  // 2) Fallback: intenta traer el contacto y leer obj/arr si existieran
-  async function fetchContactCFInline() {
-    const candidates = [
-      `https://rest.gohighlevel.com/v1/contacts/${contactId}?include=customFields`,
-      `https://rest.gohighlevel.com/v1/contacts/${contactId}`,
-      `https://rest.gohighlevel.com/v2/contacts/${contactId}`
+  // Fallback: intentar inline por si tu build lo trae en el contacto
+  async function fetchInline() {
+    const urls = [
+      `https://rest.gohighlevel.com/v1/contacts/${encodeURIComponent(contactId)}?include=customField&locationId=${encodeURIComponent(locationId)}`,
+      `https://rest.gohighlevel.com/v1/contacts/${encodeURIComponent(contactId)}?include=customFields&locationId=${encodeURIComponent(locationId)}`
     ];
-    for (const url of candidates) {
+    for (const url of urls) {
       try {
         const c = await j(url);
         const obj = c && typeof c.customField === "object" ? c.customField : null;
         const arr = Array.isArray(c?.customFields) ? c.customFields : [];
-        log("inline prueba:", url, "| has obj:", !!obj, "| arr len:", arr.length);
+        log("probe inline:", url, "| obj:", !!obj, "| arr:", arr.length);
         if (obj || arr.length) return { obj, arr };
-      } catch (e) {
-        log("inline falla:", e.message);
-      }
+      } catch(e){ log("inline falla:", e.message); }
     }
     return { obj:null, arr:[] };
   }
 
-  async function load() {
+  (async () => {
     try {
-      if (!contactId) throw new Error("No llegó contactId en la URL");
-      log("contactId:", contactId);
+      log("contactId:", contactId, "| locationId:", locationId);
 
-      const ids = await getFieldIdsByName();
-
-      // A) Primero, intenta endpoints de valores
+      // A) Primero busco en endpoints de valores (requieren locationId)
       let value = "";
-      const valuesArr = await fetchContactCFValues();
-      if (valuesArr.length) {
-        // Busca por key, por id o por nombre
-        const hitKey = valuesArr.find(it => norm(it.key||it.fieldKey||"") === norm(SUMMARY_FIELD_KEY));
-        const hitId  = valuesArr.find(it => ids.includes(it.id||it.customFieldId));
-        const hitNm  = valuesArr.find(it => norm(it.name||it.label||"")===norm(SUMMARY_FIELD_NAME));
-        const hit = hitKey || hitId || hitNm;
+      const vals = await fetchValues();
+      if (vals.length) {
+        // Busca por unique key, por nombre y por id/prop clave
+        const byKey = vals.find(v => norm(v.key||v.fieldKey||"") === norm(SUMMARY_FIELD_KEY));
+        const byNm  = vals.find(v => norm(v.name||v.label||"") === norm(SUMMARY_FIELD_NAME));
+        const hit   = byKey || byNm;
         if (hit) {
-          value = pickValue(hit) || "";
-          log("match en endpoint valores:", JSON.stringify({key:hit?.key||hit?.fieldKey, id:hit?.id||hit?.customFieldId, name:hit?.name||hit?.label, val:String(value).slice(0,80)}));
+          value = pick(hit) || "";
+          log("match valores:", JSON.stringify({key:hit.key||hit.fieldKey, name:hit.name||hit.label, val:String(value).slice(0,80)}));
         }
       }
 
-      // B) Si no hubo suerte, intenta leerlo inline desde el contacto
+      // B) Fallback inline
       if (!value) {
-        const {obj, arr} = await fetchContactCFInline();
-
-        if (obj) {
-          if (SUMMARY_FIELD_KEY in obj && obj[SUMMARY_FIELD_KEY]) { value = obj[SUMMARY_FIELD_KEY]; log("match por KEY en obj"); }
-          for (const fid of ids) { if (!value && obj[fid]) { value = obj[fid]; log("match por ID en obj:", fid); } }
-          if (!value) {
-            const keyHit = Object.keys(obj).find(k => k.toLowerCase().includes("client_summary"));
-            if (keyHit && obj[keyHit]) { value = obj[keyHit]; log("match por substring en obj:", keyHit); }
-          }
+        const { obj, arr } = await fetchInline();
+        if (obj && (SUMMARY_FIELD_KEY in obj)) {
+          value = obj[SUMMARY_FIELD_KEY] || "";
+          log("match inline obj por KEY");
         }
         if (!value && arr && arr.length) {
-          for (const it of arr) {
-            const kid   = it.id ?? it.customFieldId ?? it.key ?? it.fieldKey ?? "";
-            const kname = norm(it.name ?? it.label ?? "");
-            const val   = pickValue(it);
-            if ((kid && (ids.includes(kid) || norm(kid)===norm(SUMMARY_FIELD_KEY))) || (kname===norm(SUMMARY_FIELD_NAME))) {
-              if (val) { value = val; log("match en arr inline:", JSON.stringify({kid,kname,val:String(val).slice(0,80)})); break; }
-            }
-          }
+          const it = arr.find(v =>
+            norm(v.key||v.fieldKey||"") === norm(SUMMARY_FIELD_KEY) ||
+            norm(v.name||v.label||"")   === norm(SUMMARY_FIELD_NAME)
+          );
+          if (it) { value = pick(it) || ""; log("match inline arr"); }
         }
       }
 
-      log("valor:", value ? String(value).slice(0,200) : "(vacío)");
       document.getElementById("summary").innerText = value || "Sin resumen disponible";
+      log("valor:", value ? String(value).slice(0,200) : "(vacío)");
     } catch (e) {
+      document.getElementById("summary").innerText = "⚠️ " + (e.message || e);
       log("ERROR:", e.message || e);
-      document.getElementById("summary").innerText = "⚠️ Error: " + (e.message || e);
     }
-  }
-
-  load();
+  })();
 </script>
-
-
-
