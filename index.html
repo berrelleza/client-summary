@@ -22,68 +22,76 @@
   <pre id="debug"></pre>
 
   <script>
-    // ⚠️ CAMBIA ESTO POR TU API KEY DE LA SUBCUENTA
-    const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g";
+  // ⚠️ PON AQUÍ TU API KEY (de la misma subcuenta donde está el contacto)
+  const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g";
 
-    const params   = new URLSearchParams(location.search);
-    const contactId = params.get("contactId");
-    const HDRS = { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" };
+  // Lee contactId de la URL
+  const params    = new URLSearchParams(location.search);
+  const contactId = params.get("contactId");
 
-    const SUMMARY_FIELD_NAME = "Client Summary"; // escribe el NOMBRE EXACTO del campo
+  // Clave ÚNICA EXACTA de tu campo (sin llaves)
+  const SUMMARY_FIELD_KEY  = "contact.client_summary";   // ← importante
+  const SUMMARY_FIELD_NAME = "Client Summary";           // respaldo por nombre
 
-    const log = (...a) => { document.getElementById("debug").textContent += a.join(" ") + "\n"; };
+  const HDRS = { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" };
+  const log  = (...a)=>{ const d=document.getElementById("debug"); if(d) d.textContent+=a.join(" ")+"\n"; console.log(...a); };
 
-    async function fetchJson(url) {
-      const r = await fetch(url, { headers: HDRS, cache: "no-store" });
-      const j = await r.json();
-      return j;
-    }
+  async function j(url){ const r=await fetch(url,{headers:HDRS,cache:"no-store"}); return r.json(); }
 
-    async function getSummaryFieldId() {
-      const data = await fetchJson("https://rest.gohighlevel.com/v1/custom-fields");
-      const list = data.customFields || [];
-      log("customFields:", Array.isArray(list) ? list.length : 0);
+  // IDs de campos que se llaman "Client Summary" (por si hay duplicados)
+  async function getFieldIdsByName() {
+    const data = await j("https://rest.gohighlevel.com/v1/custom-fields");
+    const list = data.customFields || [];
+    const norm = s => (s||"").trim().toLowerCase();
+    const ids  = list
+      .filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME))
+      .map(f => f.id);
+    log("coincidencias por nombre:", ids.length);
+    return ids;
+  }
 
-      const found = list.find(f =>
-        (f.model === "contact" || !f.model) &&
-        (f.name || "").trim().toLowerCase() === SUMMARY_FIELD_NAME.toLowerCase()
-      );
-      if (!found) throw new Error(`No encontré el campo "${SUMMARY_FIELD_NAME}"`);
-      log("fieldId:", found.id, "| label:", found.name);
-      return found.id;
-    }
+  async function load() {
+    try {
+      if (!contactId) throw new Error("No llegó contactId en la URL");
+      log("contactId:", contactId);
 
-    async function load() {
-      try {
-        if (!contactId) throw new Error("No llegó contactId en la URL");
-        log("contactId:", contactId);
+      const ids = await getFieldIdsByName();
 
-        const fieldId = await getSummaryFieldId();
+      // Trae el contacto (incluye ambas formas de custom fields)
+      const c = await j(`https://rest.gohighlevel.com/v1/contacts/${contactId}?include=customFields`);
 
-        const contact = await fetchJson(`https://rest.gohighlevel.com/v1/contacts/${contactId}`);
+      let value = "";
 
-        let value = "";
-
-        // Formato 1: objeto { [fieldId]: value }
-        if (contact.customField && typeof contact.customField === "object") {
-          value = contact.customField[fieldId] || "";
+      // 1) PRIMERO: por Unique Key en el objeto customField
+      if (c.customField && typeof c.customField === "object") {
+        if (SUMMARY_FIELD_KEY in c.customField) {
+          value = c.customField[SUMMARY_FIELD_KEY] || "";
+          if (value) log("match por KEY:", SUMMARY_FIELD_KEY);
         }
-
-        // Formato 2: arreglo [{ id, value }]
-        if (!value && Array.isArray(contact.customFields)) {
-          const hit = contact.customFields.find(cf => cf.id === fieldId);
-          value = hit ? (hit.value || "") : "";
-        }
-
-        log("valor:", value ? value.slice(0,200) : "(vacío)");
-        document.getElementById("summary").innerText = value || "Sin resumen disponible";
-      } catch (e) {
-        log("ERROR:", e.message || e);
-        document.getElementById("summary").innerText = "⚠️ Error: " + (e.message || e);
       }
-    }
 
-    load();
-  </script>
-</body>
-</html>
+      // 2) Si no hay valor, probar por ID (objeto)
+      if (!value && c.customField && typeof c.customField === "object") {
+        for (const fid of ids) {
+          if (c.customField[fid]) { value = c.customField[fid]; log("match por ID en objeto:", fid); break; }
+        }
+      }
+
+      // 3) Si aún nada, probar por ID en el arreglo [{id,value}] / [{customFieldId,value}]
+      if (!value && Array.isArray(c.customFields)) {
+        for (const fid of ids) {
+          const hit = c.customFields.find(cf => (cf.id===fid || cf.customFieldId===fid) && cf.value);
+          if (hit && hit.value) { value = hit.value; log("match por ID en arreglo:", fid); break; }
+        }
+      }
+
+      log("valor:", value ? value.slice(0,200) : "(vacío)");
+      document.getElementById("summary").innerText = value || "Sin resumen disponible";
+    } catch (e) {
+      log("ERROR:", e.message || e);
+      document.getElementById("summary").innerText = "⚠️ Error: " + (e.message || e);
+    }
+  }
+
+  load();
+</script>
