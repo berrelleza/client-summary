@@ -1,47 +1,62 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Client Summary</title>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    #summary {
-      white-space: pre-wrap;
-      background: #f5f5f5;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-    }
-  </style>
-</head>
-<body>
-  <h2>📝 Client Summary</h2>
-  <div id="summary">Cargando...</div>
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const contactId = urlParams.get("contactId");
+  const apiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g"; // <- tu API key de la subcuenta
+  const headers = { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" };
 
-  <script>
-    const urlParams = new URLSearchParams(window.location.search);
-    const contactId = urlParams.get("contactId");
+  const SUMMARY_FIELD_NAME = "Client Summary"; // nombre visible del campo en GHL
 
-    const apiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g"; // 🔑 pega aquí tu API Key de la subcuenta
-    const apiUrl = `https://rest.gohighlevel.com/v1/contacts/${contactId}`;
+  async function getClientSummaryFieldId() {
+    // 1) Trae el catálogo de Custom Fields de la subcuenta
+    const res = await fetch("https://rest.gohighlevel.com/v1/custom-fields", { headers });
+    const data = await res.json();
+    const list = data.customFields || [];
 
-    async function loadSummary() {
-      try {
-        const res = await fetch(apiUrl, {
-          headers: { Authorization: `Bearer ${apiKey}` }
-        });
-        const data = await res.json();
+    // Busca el campo por nombre (ignorando mayúsculas/minúsculas y espacios)
+    const target = list.find(f =>
+      (f.model === "contact" || !f.model) &&
+      (f.name || "").trim().toLowerCase() === SUMMARY_FIELD_NAME.toLowerCase()
+    );
 
-        // Los custom fields vienen en data.customField
-        const customFields = data.customField || {};
-        const summary = customFields["Client Summary"] || "Sin resumen disponible";
+    if (!target) throw new Error(`No encontré el custom field "${SUMMARY_FIELD_NAME}"`);
+    return target.id; // <-- ESTE es el ID que necesitamos para leer el valor en el contacto
+  }
 
-        document.getElementById("summary").innerText = summary;
-      } catch (e) {
-        document.getElementById("summary").innerText = "⚠️ Error al cargar";
-      }
+  async function getContactAndRender(fieldId) {
+    const res = await fetch(`https://rest.gohighlevel.com/v1/contacts/${contactId}`, { headers });
+    const data = await res.json();
+
+    let value = "";
+
+    // v1 a veces devuelve como objeto { [fieldId]: value }
+    if (data.customField && typeof data.customField === "object") {
+      value = data.customField[fieldId] || "";
     }
 
-    loadSummary();
-  </script>
-</body>
-</html>
+    // otras veces llega como array [{ id, value }]
+    if (!value && Array.isArray(data.customFields)) {
+      const hit = data.customFields.find(cf => cf.id === fieldId);
+      value = hit ? (hit.value || "") : "";
+    }
+
+    document.getElementById("summary").innerText = value || "Sin resumen disponible";
+  }
+
+  async function loadSummary() {
+    try {
+      if (!contactId) throw new Error("No llegó contactId en la URL");
+      const fieldId = await getClientSummaryFieldId();
+      await getContactAndRender(fieldId);
+    } catch (e) {
+      console.error(e);
+      document.getElementById("summary").innerText = "⚠️ Error al cargar.";
+      // Depuración opcional en pantalla:
+      const dbg = document.createElement("div");
+      dbg.style.cssText = "margin-top:8px;font-size:12px;opacity:.7";
+      dbg.textContent = "DEBUG: " + (e && e.message ? e.message : String(e));
+      document.body.appendChild(dbg);
+    }
+  }
+
+  loadSummary();
+</script>
