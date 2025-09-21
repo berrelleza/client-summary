@@ -22,32 +22,35 @@
   <pre id="debug"></pre>
 
   <script>
-  // ⚠️ PON AQUÍ TU API KEY (de la misma subcuenta donde está el contacto)
+  // ⚠️ API KEY de la MISMA subcuenta que el contacto
   const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2NhdGlvbl9pZCI6IjB0N1JJYXNYZ3Vmekt3WmFSVzByIiwidmVyc2lvbiI6MSwiaWF0IjoxNzUyNjE1ODMwMjI2LCJzdWIiOiJRT05DeVdOU2d1U0U2bHVlMEhZMSJ9.Ufvz6D6JDPKOI46oUer34Kznr1V8Dh--k2arVp55Q1g";
 
-  // Lee contactId de la URL
   const params    = new URLSearchParams(location.search);
   const contactId = params.get("contactId");
 
-  // Clave ÚNICA EXACTA de tu campo (sin llaves)
-  const SUMMARY_FIELD_KEY  = "contact.client_summary";   // ← importante
-  const SUMMARY_FIELD_NAME = "Client Summary";           // respaldo por nombre
+  // Unique key EXACTA (sin llaves) y nombre visible
+  const SUMMARY_FIELD_KEY  = "contact.client_summary";
+  const SUMMARY_FIELD_NAME = "Client Summary";
 
   const HDRS = { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" };
   const log  = (...a)=>{ const d=document.getElementById("debug"); if(d) d.textContent+=a.join(" ")+"\n"; console.log(...a); };
 
   async function j(url){ const r=await fetch(url,{headers:HDRS,cache:"no-store"}); return r.json(); }
 
-  // IDs de campos que se llaman "Client Summary" (por si hay duplicados)
+  // IDs de los campos que se llaman “Client Summary” (por si hay duplicados)
   async function getFieldIdsByName() {
     const data = await j("https://rest.gohighlevel.com/v1/custom-fields");
     const list = data.customFields || [];
     const norm = s => (s||"").trim().toLowerCase();
-    const ids  = list
-      .filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME))
-      .map(f => f.id);
+    const ids  = list.filter(f => (f.model==="contact"||!f.model) && norm(f.name)===norm(SUMMARY_FIELD_NAME))
+                     .map(f => f.id);
     log("coincidencias por nombre:", ids.length);
     return ids;
+  }
+
+  function pickValue(item){
+    // distintas formas en que llega el valor
+    return item?.value ?? item?.field_value ?? item?.fieldValue ?? item?.text ?? item?.stringValue ?? "";
   }
 
   async function load() {
@@ -57,35 +60,64 @@
 
       const ids = await getFieldIdsByName();
 
-      // Trae el contacto (incluye ambas formas de custom fields)
+      // Trae el contacto (incluimos customFields)
       const c = await j(`https://rest.gohighlevel.com/v1/contacts/${contactId}?include=customFields`);
+      // Dump parcial para inspección
+      log("has customField obj:", !!c.customField);
+      log("customFields array len:", Array.isArray(c.customFields) ? c.customFields.length : 0);
+
+      // Muestra 1–2 ejemplos de lo que trae, recortado
+      if (c.customField) {
+        const keys = Object.keys(c.customField);
+        log("customField keys (primeras):", keys.slice(0,15).join(", "));
+        if (keys.length) log("customField sample:", keys[0], "=", String(c.customField[keys[0]]).slice(0,120));
+      }
+      if (Array.isArray(c.customFields) && c.customFields.length) {
+        const it = c.customFields[0];
+        log("customFields[0] sample:", JSON.stringify({
+          id: it.id, customFieldId: it.customFieldId, key: it.key, name: it.name, label: it.label,
+          value: pickValue(it)
+        }).slice(0,220));
+      }
 
       let value = "";
 
-      // 1) PRIMERO: por Unique Key en el objeto customField
-      if (c.customField && typeof c.customField === "object") {
-        if (SUMMARY_FIELD_KEY in c.customField) {
-          value = c.customField[SUMMARY_FIELD_KEY] || "";
-          if (value) log("match por KEY:", SUMMARY_FIELD_KEY);
-        }
+      // 1) Por KEY directa en el objeto customField
+      if (c.customField && typeof c.customField === "object" && SUMMARY_FIELD_KEY in c.customField) {
+        value = c.customField[SUMMARY_FIELD_KEY] || "";
+        if (value) log("match por KEY:", SUMMARY_FIELD_KEY);
       }
 
-      // 2) Si no hay valor, probar por ID (objeto)
+      // 2) Por ID en el objeto customField
       if (!value && c.customField && typeof c.customField === "object") {
         for (const fid of ids) {
           if (c.customField[fid]) { value = c.customField[fid]; log("match por ID en objeto:", fid); break; }
         }
       }
 
-      // 3) Si aún nada, probar por ID en el arreglo [{id,value}] / [{customFieldId,value}]
+      // 3) Por ID/KEY/NOMBRE en el array customFields
       if (!value && Array.isArray(c.customFields)) {
-        for (const fid of ids) {
-          const hit = c.customFields.find(cf => (cf.id===fid || cf.customFieldId===fid) && cf.value);
-          if (hit && hit.value) { value = hit.value; log("match por ID en arreglo:", fid); break; }
+        for (const item of c.customFields) {
+          const kid   = item.id ?? item.customFieldId ?? item.key ?? item.fieldKey ?? "";
+          const kname = (item.name ?? item.label ?? "").trim().toLowerCase();
+          const val   = pickValue(item);
+
+          if (
+            (kid && (ids.includes(kid) || kid === SUMMARY_FIELD_KEY)) ||
+            (kname && kname === SUMMARY_FIELD_NAME.toLowerCase())
+          ) {
+            if (val) { value = val; log("match en arreglo:", JSON.stringify({kid, kname, val: String(val).slice(0,80)})); break; }
+          }
         }
       }
 
-      log("valor:", value ? value.slice(0,200) : "(vacío)");
+      // 4) Heurística: cualquier clave en el objeto que contenga 'client_summary'
+      if (!value && c.customField && typeof c.customField === "object") {
+        const keyHit = Object.keys(c.customField).find(k => k.toLowerCase().includes("client_summary"));
+        if (keyHit && c.customField[keyHit]) { value = c.customField[keyHit]; log("match por substring en objeto:", keyHit); }
+      }
+
+      log("valor:", value ? String(value).slice(0,200) : "(vacío)");
       document.getElementById("summary").innerText = value || "Sin resumen disponible";
     } catch (e) {
       log("ERROR:", e.message || e);
